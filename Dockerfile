@@ -21,7 +21,7 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     v${ALPINE_VERSION%.*}/main \
     v${ALPINE_VERSION%.*}/community \
     > /etc/apk/repositories && \
-    apk update --no-cache; \
+    apk update --no-cache || exit 1; \
 :                \
 :   install apk  \
 ;                \
@@ -31,13 +31,13 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     curl --location --retry 3 https://github.com/arut/nginx-rtmp-module/archive/v$NGINX_RTMP_VERSION.tar.gz | tar -xzf - && \
     curl --location --retry 3 https://github.com/nginx/njs/archive/$NJS_VERSION.tar.gz | tar -xzf - && \
     curl --location --retry 3 http://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.gz | tar -xzf - && \
-    apk del .download
+    apk del .download || exit 1
 
 RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     v${ALPINE_VERSION%.*}/main \
     v${ALPINE_VERSION%.*}/community \
     > /etc/apk/repositories && \
-    apk update --no-cache; \
+    apk update --no-cache || exit 1; \
 :                \
 :   install apk  \
 ;                \
@@ -49,7 +49,7 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     linux-headers \
     openssl-dev \
     pcre-dev \
-    zlib-dev; \
+    zlib-dev || exit 1; \
 :                \
 :   build nginx  \
 ;                \
@@ -105,42 +105,47 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     --with-cc-opt='-Os -fomit-frame-pointer' \
     --with-ld-opt=-Wl,--as-needed && \
     make CFLAGS='-Wno-implicit-fallthrough' && \
-    make install; \
+    make install || exit 1; \
     rm -fv /etc/nginx/*.default; \
-    mkdir -v /etc/nginx/conf.d /usr/share/nginx; \
+    mkdir -v /etc/nginx/conf.d /usr/share/nginx && \
     mv -v /etc/nginx/html /usr/share/nginx/ && \
+:                     \
+:   decompress conf   \
+;                     \
     cd /etc/nginx/ && \
     printf "%s\n" \
-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 \
-| base64 -d | tar -xzvf - && chmod 644 *.conf && \
+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 \
+| base64 -d | tar -xzvf - || exit 1; \
+    chmod 644 *.conf && \
     mv -v /etc/nginx/default.conf /etc/nginx/conf.d/; \
     find /bin /etc /lib /run /sbin /usr /var ! -type d | sort > /tmp/after-0.log; \
     apk del .build-nginx; \
@@ -150,14 +155,14 @@ ipv/7a8pDTTQQAMNNNBAAw000EADDTTQQAPfHvwB/sUb+AAoAAA= \
     mkdir -pv /tmp/rootfs; \
     diff /tmp/before-0.log /tmp/after-0.log | \
     awk '/^\+\// && !/\.(a|c|h|log)$|examples/{sub(/\+/, "", $0); print $0}' | \
-    cpio -d -p /tmp/rootfs;
+    cpio -d -p /tmp/rootfs || exit 1;
 
 
 # ffmpeg
 RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     edge/community \
     >> /etc/apk/repositories && \
-    apk update --no-cache; \
+    apk update --no-cache || exit 1; \
 :               \
 :   update apk  \
 ;               \
@@ -176,7 +181,7 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     rtmpdump-dev \
     x264-dev \
     x265-dev \
-    fdk-aac-dev; \
+    fdk-aac-dev || exit 1; \
 :                 \
 :   build ffmpeg  \
 ;                 \
@@ -208,7 +213,7 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     --enable-small \
     --enable-version3 && \
     make && \
-    make install; \
+    make install || exit 1; \
     find /bin /etc /lib /run /sbin /usr /var ! -type d | sort > /tmp/after-1.log; \
 :                              \
 :   manipulate archive files   \
@@ -216,7 +221,7 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     mkdir -pv /tmp/rootfs; \
     diff /tmp/before-1.log /tmp/after-1.log | \
     awk '/^\+\// && !/\.(a|c|h|log)$|examples/{sub(/\+/, "", $0); print $0}' | \
-    cpio -d -p /tmp/rootfs;
+    cpio -d -p /tmp/rootfs || exit 1;
 
 
 
@@ -232,7 +237,7 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     v${ALPINE_VERSION%.*}/community \
     edge/community \
     > /etc/apk/repositories && \
-    apk update --no-cache; \
+    apk update --no-cache && \
     apk add --no-cache \
     fdk-aac \
     geoip \
@@ -253,20 +258,23 @@ RUN printf "${REPO_MIRRORS_URL}/%s\n" \
     rtmpdump \
     tzdata \
     x264-libs \
-    x265-libs; \
+    x265-libs || exit 1; \
 :            \
 :    user    \
 ;            \
     addgroup -g 101 -S nginx && \
-    adduser -S -D -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx; \
+    adduser -S -D -u 101 -h /var/cache/nginx -s /sbin/nologin -G nginx -g nginx nginx || exit 1; \
     mkdir -pv /var/log/nginx /run/nginx; \
 :                \
 :    timezone    \
 ;                \
     apk add --no-cache --virtual .tz tzdata && \
-    cp -fv /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    cp -fv /usr/share/zoneinfo/Asia/Shanghai /etc/localtime || exit 1; \
     echo "Asia/Shanghai" > /etc/timezone && \
     apk del .tz; \
+:                 \
+:   docker logs   \
+;                 \
     ln -fsv /dev/stdout /var/log/nginx/access.log && \
     ln -fsv /dev/stderr /var/log/nginx/error.log;
 

@@ -50,6 +50,8 @@ docker cp nginx:/etc/nginx/conf.d /opt/nginx
 docker cp nginx:/usr/share/nginx/html /opt/nginx
 docker stop nginx
 
+[ -s /etc/timezone ] || echo "Asia/Shanghai" > /etc/timezone
+
 # run
 docker run --detach \
     --name nginx \
@@ -60,6 +62,8 @@ docker run --detach \
     --volume /opt/nginx/ssl:/etc/ssl \
     --volume /opt/nginx/conf.d:/etc/nginx/conf.d \
     --volume /opt/nginx/html:/usr/share/nginx/html \
+    --volume /etc/timezone:/etc/timezone:ro \
+    --volume /etc/localtime:/etc/localtime:ro \
     binave/nginx-rtmp:1.17.10-alpine
 
 ```
