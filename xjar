@@ -1,0 +1,518 @@
+#!/bin/busybox ash
+#   Copyright 2021 bin jin
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+__xj__variable_map () {
+    [ "$1" ] || return 1;
+    __xj__vmap_encode() {
+        [ "${1//[0-9A-Za-z_]/}" == "" ] && { printf %s "$1"; return 0; }
+        local idx=-1 args=; while [ $((idx+=2)) -le ${#1} ]; do args="$args '${1:$idx-1:1} '${1:$idx:1}"; done; printf x%x ${args%" '"}; # printf "${args//x/\\x}"
+        # printf d%d ${key%" '"}; # printf "`printf '\\\\x'%x ${key//d/ }`"
+    }
+
+    local key pool value;
+    [ "${1:0:2}" == "--" ] || { pool=`__xj__vmap_encode "$1"`; shift; };
+    key=`__xj__vmap_encode "$2"` value="$3";
+    case $1 in
+        --put) [ "$value" ] && eval VARIABLE_MAP${pool}_PREFIX_$key=\"\$value\";;
+        --incrby) [ "$value" ] && eval ": \$((VARIABLE_MAP${pool}_PREFIX_$key += $value))";;
+        --append) [ "$value" ] && eval VARIABLE_MAP${pool}_PREFIX_$key=\"\$VARIABLE_MAP${pool}_PREFIX_$key\$value\";;
+        --get) [ "$key" ] && eval printf %s \"\$VARIABLE_MAP${pool}_PREFIX_$key\";;
+        --remove) [ "$key" ] && unset VARIABLE_MAP${pool}_PREFIX_$key;;
+        --size) printf %d $(set | grep -c '^VARIABLE_MAP'${pool}_PREFIX_);;
+        --clear) unset `set | awk -F '=' '/^VARIABLE_MAP'${pool}'_PREFIX_/{printf " " $1}'`;;
+        --keys) printf `set | awk -F '_PREFIX_|=' '/^VARIABLE_MAP'${pool//x2a/".*"}'_PREFIX_'${key//x2a/".*"}'/{if($2 ~ /^(x[0-9a-f]{2})+$/) {printf gensub(/x/, "\\\\\\\x", "g", $2) "\\\n"} else {printf $2 "\\\n"}}'`;;
+        --2keys) printf `set | awk -F 'VARIABLE_MAP|_PREFIX_|=' '/^VARIABLE_MAP'${pool//x2a/".*"}'_PREFIX_'${key//x2a/".*"}'/{if($2 ~ /^(x[0-9a-f]{2})+$/) {printf gensub(/x/, "\\\\\\\x", "g", $2)} else {printf $2}; printf "*"; if($3 ~ /^(x[0-9a-f]{2})+$/) {printf gensub(/x/, "\\\\\\\x", "g", $3)} else {printf $3}; printf "\\\n"}'`;;
+        *) printf "%s\033[31m%s\033[0m%s\n" "[MAP:ERROR] invalid option: " "$1" >&2; return 1;;
+    esac
+
+}
+
+__xj_unset_var() {
+    # clear environment variables
+    unset $(set | awk -F = '/^(XJ|xj)_[0-9A-Za-z_]+=/{printf " " $1}')
+}
+
+export XJ_TCPU_SLEEP_SEC=${XJ_TCPU_SLEEP_SEC:-'0.1'};
+export XJ_INTERNAL_ROOTS=${XJ_INTERNAL_ROOTS:-'/www/internal'} XJ_NGINX_CONF=${XJ_NGINX_CONF:-'/etc/nginx/nginx.conf'};
+export XJ_HERTZ=`getconf CLK_TCK` XJ_MEM_TOTAL=`awk '/MemTotal/{printf "%.2fg", $2 / 1024 / 1024}' /proc/meminfo`;
+
+__xj_jprocesses() {
+    local pid REPLY;
+    # strace top -b -n 1 -p $pid;
+    for pid in /proc/[0-9]*/comm; do
+        read < $pid;
+        [ "$REPLY" == "java" ] || continue;
+        pid=${pid//[^0-9]/};
+
+        eval "$(
+            ls -l /proc/$pid/fd | awk \
+                -v pid=$pid \
+                -v hertz=$XJ_HERTZ \
+                -v sleep_sec=$XJ_TCPU_SLEEP_SEC \
+                -v ir_regex="${XJ_INTERNAL_ROOTS//:/'|'}" '
+            ARGIND == 1 \
+            {
+                printf "__xj__variable_map pid:mem --put %s %.2fg;\n",
+                    pid, $2 * 4 / 1024 / 1024;
+
+                stat_file = "/proc/stat", pstat_file = "/proc/" pid "/stat"; # fix bug on centos7
+
+                getline < "/proc/uptime"; uptime = $1;
+                getline < stat_file; save_totel = $2 + $3 + $4 + $5 + $6 + $7 + $8;
+                getline < pstat_file; save_tic = $14 + $15 + $16 + $17, start_time = $22;
+
+                close(stat_file); close(pstat_file); close("/proc/uptime");
+
+                printf "__xj__variable_map pid:pcpu --put %s %.2f%%;\n",
+                    pid, save_tic * 100 / hertz / (uptime - start_time / hertz);
+
+                system("sleep " sleep_sec);
+
+                getline < stat_file; cur_totel = $2 + $3 + $4 + $5 + $6 + $7 + $8;
+                getline < pstat_file; cur_tic = $14 + $15 + $16 + $17;
+
+                close(stat_file); close(pstat_file);
+
+                printf "__xj__variable_map pid:tcpu --put %s %.2f%%;\n",
+                    pid, (cur_tic - save_tic) * 100 / (cur_totel - save_totel);
+
+            }
+            ARGIND >= 2 \
+            {
+                if($11 ~ /socket:/){
+                    inode_set[$11]++;
+
+                } else if($1$2 == "sllocal_address") {
+                    protocol_idx++;
+
+                } else if(inode_set["socket:[" $10 "]"]) {
+                    printf "__xj__variable_map pid:port_list --append %s ,%d/%s;\n",
+                        pid, gensub(/.*:/, "0x", 1, $2), protocol_idx == 1 ? "tcp" : "udp";
+
+                } else if ($11 ~ /\.jar$/ && $11 !~ /\/lib\//) {
+                    paths_set[gensub(/\/[^\/]+$/, "", 1, $11)]++;
+
+                }
+            }
+            END{
+                for (path in paths_set) {
+                    if (paths_set[gensub(/\/[^\/]+$/, "", 1, path)]) continue;
+                    env_path = path "/env", internal = 0;
+                    while((getline < env_path) > 0)
+                        if (/^[[:space:]]*INTERNAL=(true|TRUE|1)/) { internal = 1; break; }
+                    close(env_path);
+                    if (internal || match(path, ir_regex)) printf "__xj__variable_map pid:internal --put %s %s;\n", pid, internal;
+                    printf "__xj__variable_map path:pid_list --append %s ,%s;\n", path, pid;
+                }
+
+            }' /proc/$pid/statm - /proc/$pid/net/tcp /proc/$pid/net/udp
+        )"
+    done
+
+}
+
+__xj_load_ngx_conf() {
+    [ "$1" ] || set -- "$XJ_NGINX_CONF" 0;
+    [ "$2" ] || set -- "$1" 0;
+    local row_col depth key value args \
+        protocol=$protocol upstream=$upstream server_names=$server_names listens=$listens location=$location \
+        XJAR_ROOTS=$XJAR_ROOTS XJAR_INCLUDE=$XJAR_INCLUDE XJAR_IGNORE=$XJAR_IGNORE;
+
+    while read row_col depth key value args; do
+        case $depth:$key in
+            1:upstream) # begin: upstream {}
+                upstream=$value;
+
+            ;;
+            2:server) # upstream content
+                [ "$upstream" ] && {
+                    __xj__variable_map $protocol:upstream_list --append $upstream " $value";
+                    __xj__variable_map $protocol:$upstream --put "$value" "$1:$row_col";
+                }
+
+            ;;
+            1:server) # begin: server {}
+                :
+            ;;
+            2:}) # end: upstream {}, server {}
+                local xroot location;
+                [ "$XJAR_ROOTS" ] && {
+                    for xroot in ${XJAR_ROOTS//:/ }; do
+                        __xj__variable_map xroot:server_names --put $xroot "$server_names";
+                        __xj__variable_map server_names:xroot --put $server_names $xroot;
+                        for location in `__xj__variable_map server_names:location_list --get $server_names`; do
+                            __xj__variable_map path:server_names --put $xroot$location $server_names
+                        done
+                    done
+                    __xj__variable_map server_names:listens --put $server_names $listens;
+
+                }
+                unset server_names listens location XJAR_ROOTS XJAR_INCLUDE XJAR_IGNORE;
+
+            ;;
+            2:server_name)
+                server_names="${value%;*} ${args%;*}";
+                server_names="${server_names//  / }"
+                server_names=${server_names% };
+                server_names="${server_names// /'|'}"
+            ;;
+            2:listen)
+                [ "${value#'[::]:'}" == "$value" ] || continue;
+                listens="$listens|${value%;*}";
+                listens="${listens#'|'}"
+            ;;
+            2:#!) # $XJAR_ROOTS $XJAR_INCLUDE or $XJAR_IGNORE
+                eval $value $args;
+            ;;
+            2:location) # begin: location {}
+                location="$value $args";
+                if [ "${location/@/}" == "$location" ]; then
+                    location=/${location#*/};
+                else
+                    location=@${location#*@};
+                fi
+                location=${location% *};
+                location=${location%/};
+
+                [ "`__xj__variable_map server_names:row_col-begin --get $server_names`" ] || \
+                    __xj__variable_map server_names:row_col-begin --put $server_names \
+                    "$1:${row_col%,*},$((${row_col#*,} - ${#key} - ${#value} - ${#args} - 2))"
+
+                __xj__variable_map server_names:location_list --append $server_names " $location";
+                __xj__variable_map $server_names:location-begin --put $location "$1:$row_col";
+
+            ;;
+            3:}) # end: location {}
+                [ "$location" ] && {
+                    __xj__variable_map $server_names:location-end --put $location "$1:$row_col";
+
+                }
+                unset location;
+            ;;
+            3:proxy_pass)
+                local proxy_pass=${value%;*} upstream_server;
+                # upstream_server=${proxy_pass#*//};
+                # __xj__variable_map http:upstream_list --get $upstream_server
+                __xj__variable_map server_names:location:proxy_passes --put $server_names:$location "$proxy_pass";
+                __xj__variable_map $server_names:$location:proxy_pass --put $proxy_pass "$1:$row_col";
+
+            ;;
+            [0-9]*:include)
+                [ "${value%.conf;}" == "$value" ] && continue;
+                [ "${value:0:1}" == "/" ] || value=${1%/*}/$value;
+                local conf;
+                for conf in `eval ls $value`; do
+                    __xj_load_ngx_conf $conf $depth;
+                done
+            ;;
+            0:http|0:rtmp|0:stream)
+                protocol=$key;
+            ;;
+            1:})
+                unset protocol upstream
+            ;;
+        esac
+    done <<-SH
+`
+    awk -v base=$2 -F \#[^!] '
+    BEGIN{ob=0; cb=0;};
+    {
+        if($1 !~ /^[[:space:]#]*$/) {
+            tag=0;
+            for(i=1; i<=length($1); i++) {
+                c=substr($1, i, 1);
+                if(tag == 0 && c ~ /[^[:space:]]/) {
+                    tag=1;
+                    printf "\n%s,%s %s ", NR, i, ob - cb + base;
+
+                }
+
+                if(c == "{") {
+                    ob++;
+                    printf "{\n%s,%s %s ", NR, i, ob - cb + base;
+
+                } else if(c == "}") {
+                    printf "\n%s,%s %s ", NR, i, ob - cb + base;
+                    cb++;
+                    printf "}\n%s,%s %s ", NR, i + 1, ob - cb + base;
+
+                } else printf c
+
+            }
+        }
+    };
+    END{
+        printf "\n";
+        if(ob == cb) {exit 0} else exit 1
+    }' $1
+`
+SH
+}
+
+__xj_jarpath() {
+    find $(__xj__variable_map xroot:server_names --keys) -type f -iname "*.jar" 2>/dev/null | \
+        awk '{
+                paths_set[gensub(/\/[^\/]+$/, "", 1)]++;
+            };
+            END{
+                for (p in paths_set)
+                    if (!paths_set[gensub(/\/[^\/]+$/, "", 1, p)])
+                        print p;
+            }'
+}
+
+# __xj_unset_var;
+# [ -s ".env" ] && \
+#     eval $(awk -F \# '$1 ~ /=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print "export XJ_" $1}' ".env");
+# eval $(set | awk '/^[A-Z_]+=[^(][^*]{,128}$/{print "export XJ_" $0}');
+
+# if [ "$XJ_JAR_LOG_DIR" ]; then
+#     :
+# elif [ "$XJ_JAR_LOG_DIR_PRE" ]; then
+#     XJ_JAR_LOG_DIR="${XJ_JAR_LOG_DIR_PRE%/}/${PWD##*/}/${XJ_JAR_LOG_DIR_SUF#/}";
+#     XJ_JAR_LOG_DIR="${XJ_JAR_LOG_DIR%/}";
+# else
+#     XJ_JAR_LOG_DIR="$PWD/logs"
+# fi
+# : ${XJ_LIVE_LOG_DIR:="${XJ_JAR_LOG_DIR%/*}"};
+
+# for xj_jar_path in "$PWD/"*.jar; do :; done
+# xj_jar_path="${xj_jar_path/*\**/}"; # jar file not found
+# xj_jar_path="${xj_jar_path/'-sources.'/.}";
+# xj_jar_path="${xj_jar_path/'-src.'/.}";
+
+# [ -s "$xj_jar_path" ] && {
+#     xj_jar_name="${xj_jar_path##*/}";
+#     xj_jar_name="${xj_jar_name%.*}";
+#     # xj_args_file="$XJ_JAR_LOG_DIR/$xj_jar_name.args";
+#     xj_jar_dir="${xj_jar_path%/*}/";
+#     xj_java_pid=$(ps -ef | awk '/'"${xj_jar_dir//\//\\/}"'.*\.jar/ && !/awk/{print $2}');
+#     [ "$XJ_LOG_PREFIX" ] && {
+#         # man date
+#         [ "$XJ_LOG_PREFIX" == "${XJ_LOG_PREFIX/\%[A-DF-IMNPR-Za-eghj-npr-z]/}" -a "$XJ_LOG_PREFIX" == "${XJ_LOG_PREFIX/\%-[A-DF-IMNPR-Za-eghj-npr-z]/}" ] && {
+#             printf "[\033[1;31mERROR\033[0m] \033[1mLOG_PREFIX\033[0m invalid option: '\033[33m%s\033[0m' in '\033[32m%s\033[0m'\n" "$XJ_LOG_PREFIX" ".env" >&2;
+#             exit 1
+
+#         };
+#         xj_jar_log_prefix='strftime("'"$XJ_LOG_PREFIX"'"), $0'; # for awk
+
+#     };
+# };
+
+case $1 in
+    start)
+        shift;
+
+        exec 100>>$XJ_NGINX_CONF;
+        flock --exclusive --nonblock 100 || {
+            printf "[ERROR] bad interpreter: conf file busy.\n" >&2;
+            exit 1
+        };
+
+        __xj_jprocesses;
+        __xj_load_ngx_conf;
+
+        [ "$*" ] || set -- "";
+        for arg in "$@"; do
+            while read key; do
+                echo ${key#*\*} ${key%':location-begin*'*};
+            done <<-SH
+                `__xj__variable_map *:location-begin --2keys /$arg`
+SH
+        done
+
+        # __xj_test_single_process;
+        # [ "$xj_java_pid" ] && { printf "name:\033[1m%-26s\033[0m is running.\n" $xj_jar_name; exit 1; } >&2;
+        # shift;
+        # case $1 in
+        #     "") :;;
+        #     --debug|-D)
+        #         XJ_JAVA_ARGS+=" -Xdebug";
+        #         XJ_JAVA_ARGS+=" -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8457"
+        #     ;;
+        #     *)
+        #         printf "[\033[1;31mERROR\033[0m] Invalid option: start '\033[33m%s\033[0m'\n" "$1" >&2;
+        #         exit 1
+
+        #     ;;
+        # esac
+
+        # mkdir -pv $XJ_JAR_LOG_DIR;
+        # xj_jar_log_dir_prefix="$XJ_JAR_LOG_DIR/$xj_jar_name";
+        # set -- $XJ_JAVA_ARGS -jar "$xj_jar_path" $XJ_JAR_ARGS;
+        # (
+        #     # clear sub environment variables
+        #     __xj_unset_var;
+        #     # clear functions
+        #     unset $(set | awk '/^__xj_[0-9A-Za-z_]+[[:space:]]*\(/{printf " " $1}');
+        #     # main
+        #     nohup < /dev/null java "$@" 2>&1 &
+
+        # ) | sed -ru 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]|\r//g' | \
+        #     awk -v dir_prefix="$xj_jar_log_dir_prefix" '{print '"${xj_jar_log_prefix}"' >> strftime(dir_prefix "_%Y%m%d.log");fflush(stdout)}' >/dev/null &
+
+    ;;
+    log)
+        :
+        # shift;
+        # [ "$1" == "${1/-[0-9]/}" ] || set -- ${2:-10} $1;
+        # xj_jar_log_file="$(date -d "${2:-0} days" +$XJ_JAR_LOG_DIR/${xj_jar_name}_%Y%m%d.log)";
+
+        # if [ "$HISTCONTROL" -a ! "$TEAMCITY_VERSION" ] && [ ! "$2" ]; then
+        #     set -- -F -n ${1:-10};
+
+        # else
+        #     set -- -n ${1:-10};
+        #     printf "\n"
+
+        # fi
+
+        # printf "==> \033[32m%s\033[0m <==\n" $xj_jar_log_file;
+        # tail $@ "$xj_jar_log_file" 2>/dev/null
+
+    ;;
+    stop)
+        :
+        # [ "$xj_java_pid" ] || { printf "name:\033[1m%-26s\033[0m not running.\n" $xj_jar_name; exit 1; } >&2;
+        # kill -9 $xj_java_pid;
+        # sleep 0.5;
+        # xj_wait_limit=10;
+        # while ps -p $xj_java_pid >/dev/null; do
+        #     sleep 1;
+        #     [ $((xj_wait_limit--)) -le 0 ] && {
+        #         printf "[\033[1;31mERROR\033[0m] kill '\033[1m%s\033[0m' faild, pid: \033[1m%s\033[0m\n" $xj_jar_name $xj_java_pid >&2;
+        #         exit 1
+        #     };
+
+        # done
+        # unset xj_wait_limit;
+
+    ;;
+    restart)
+        shift;
+        # xj_tmp_args=$(cat "$xj_args_file" 2>/dev/null);
+        # [ ! "$1" ] && [ "$xj_tmp_args" ] && set -- $xj_tmp_args;
+        # unset xj_tmp_args;
+        bash "$0" stop;
+        bash "$0" start "$@"
+
+    ;;
+    status|"")
+        __xj_jprocesses;
+        __xj_load_ngx_conf;
+        while read path; do
+            server_names=`__xj__variable_map path:server_names --get $path`;
+            if [ "$server_names" ]; then
+                xroot=`__xj__variable_map server_names:xroot --get $server_names`;
+                pid=`__xj__variable_map path:pid_list --get $path`;
+                pid=${pid#,};
+                [ "${pid//[0-9]/}" == "" ] || { printf "name:\033[1m%-26s\033[0m [\033[1;31mERROR\033[0m] not single process. pid: \033[1m%s\033[0m\n" $path, $pid >&2; exit 1; };
+                if [ "$pid" ]; then
+                    ports=`__xj__variable_map pid:port_list --get $pid`;
+                    if [ "`__xj__variable_map pid:internal --get $pid`" ]; then
+                        prefix="[internal]:$path"
+                    else
+                        prefix=$server_names:`__xj__variable_map server_names:listens --get $server_names`${path#$xroot}
+                    fi
+                    printf "%s pid:\033[1m%s\033[0m ports:\033[1m%s\033[0m cpu:\033[1m%s\033[0m mem:\033[1m%s\033[0m\n" "$prefix" $pid ${ports#,} `__xj__variable_map pid:tcpu --get $pid`,`__xj__variable_map pid:pcpu --get $pid` `__xj__variable_map pid:mem --get $pid`
+
+                else
+                    printf "%s [\033[1minactive (\033[31mdead\033[0m)\033[0m]\n" $server_names:`__xj__variable_map server_names:listens --get $server_names`${path#$xroot}
+                fi
+            else
+                xroot="$path";
+                while [ ! "$server_names" ]; do
+                    xroot=${xroot%/*};
+                    [ "$xroot" ] || { printf "[\033[31mERROR\033[0m] Unknown\n" >&2; exit 1; }
+                    server_names=`__xj__variable_map xroot:server_names --get $xroot`;
+                done
+                printf "%s [\033[1munconfig\033[0m]\n"  $server_names:`__xj__variable_map server_names:listens --get $server_names`${path#$xroot}
+            fi
+        done <<-SH
+            `__xj_jarpath`
+SH
+
+        # todo if pid count > file; warn
+    ;;
+    live)
+        :
+        # {
+        #     mkdir -pv "$XJ_LIVE_LOG_DIR";
+        #     if [ "$xj_java_pid" -a "${xj_java_pid/[^0-9]/}" == "$xj_java_pid" ]; then
+        #         # print every 10 minutes
+        #         [ $((1`date +%M` % 10)) == 0 ] && printf "%s\n" live
+
+        #     else
+        #         printf "restart: ";
+        #         free -h | awk '/Mem:/{printf "u/a: %s/%s\n", $3, $2}';
+        #         export TEAMCITY_VERSION=none HISTCONTROL=;
+        #         nohup < /dev/null bash "$0" restart >/dev/null 2>&1 &
+
+        #     fi
+        # } 2>&1 | awk -v dir_prefix="$XJ_LIVE_LOG_DIR" -v arg_name=$xj_jar_name \
+        #         '{printf "%s, %-26s %s\n" ,strftime("%F %T"), arg_name ",", $0 >> strftime(dir_prefix "/live_%Y%m%d.log");fflush(stdout)}'
+
+    ;;
+    # --dir|-d)
+    #     shift;
+    #     [ -d "$1" ] || {
+    #         printf "[\033[1;31mERROR\033[0m] '\033[32m%s\033[0m' directory must exist.\n" $1 >&2;
+    #         exit 1
+    #     };
+    #     # all case
+    #     __args__=$(awk -F \) '/^[[:space:]]*[A-Za-z|-]+)/{gsub(/\|/, " ", $1); printf " %s ", $1}' "$0");
+    #     # make sure path exist and not match case
+    #     while [ -d "$1" -a "${__args__/ $1 /}" == "$__args__" ]; do __dir__[${#__dir__[@]}]="$1"; shift; done
+    #     unset __args__;
+    #     export TEAMCITY_VERSION=none HISTCONTROL=;
+    #     while read __sh__; do
+    #         (
+    #             cd "`dirname "$__sh__"`";
+    #             unset __dir__ __sh__;
+    #             bash "$0" "$@"
+    #         )
+    #     done < <(find "${__dir__[@]}" -type f -name .env);
+    #     unset __dir__ __sh__
+
+    # ;;
+    *)
+        printf "[\033[31mERROR\033[0m] invalid option '\033[33m$1\033[0m'.
+
+usage: xjar [option] [[name_prefix]...|--all]
+    start|restart   [--debug|-D]    start|restart jar process.
+    stop                        stop jar process.
+    conf                        modify config.
+    status                      show process info, hostname.
+    log     [lines|-[days]]     print last n lines and n days before log.
+    live    [enable|disable]    start jar if not run,
+                                and logging live every 10 minutes.
+
+config file:
+    cat > \033[32m./.env\033[0m <<-EOF\033[7m
+# LOG_PREFIX='%%F %%T,'
+JAR_ARGS=' --config.location=./application.yml'
+JAR_ARGS+=' --prefix=/xxx'
+JAVA_ARGS=' -Xmx1024m'
+JAVA_ARGS+=' -Xms1024m'
+\033[0mEOF
+
+e.g.
+    ssh user@hostname 'docker exec nginx xjar restart \$name1 \$name2'
+    ssh user@hostname 'docker exec nginx xjar restart \$name1; sleep 30; docker exec nginx xjar || { docker exec nginx xjar log -0 100; exit 1; }'
+
+" >&2
+
+    ;;
+esac

@@ -15,6 +15,7 @@
 !Dockerfile
 !README.md
 !LICENSE
+!xjar
 
 # Ignore some directory
 .*/
