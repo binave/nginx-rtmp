@@ -100,10 +100,11 @@ RUN set -e; \
     --with-stream_ssl_preread_module \
     --with-stream_geoip_module=dynamic \
     --with-threads \
-    --with-cc-opt='-Os -fomit-frame-pointer' \
-    --with-ld-opt=-Wl,--as-needed && \
+    --with-cc-opt='-Os -fomit-frame-pointer -g' \
+    --with-ld-opt=-Wl,--as-needed,-O1,--sort-common && \
     make CFLAGS='-Wno-implicit-fallthrough'; \
-    find /bin /etc /lib /run /sbin /usr /var ! -type d | sort > /tmp/before-0.log; \
+    find /* -maxdepth 0 -type d ! -regex '\/\(dev\|lost\+found\|mnt\|proc\|srv\|sys\|tmp\)' -exec find {} + | \
+        sort > /tmp/before-0.log; \
     make install; \
 :                     \
 :   decompress conf   \
@@ -305,7 +306,8 @@ AA== \
     mv -v /etc/nginx/xjar /usr/bin/ && chmod -v +x /usr/bin/xjar; \
     mv -v /etc/nginx/html /run/www; \
     rm -fv /etc/nginx/*.default; \
-    find /bin /etc /lib /run /sbin /usr /var ! -type d | sort > /tmp/after-0.log; \
+    find /* -maxdepth 0 -type d ! -regex '\/\(dev\|lost\+found\|mnt\|proc\|srv\|sys\|tmp\)' -exec find {} + | \
+        sort > /tmp/after-0.log; \
     apk del .build-nginx; \
 :                              \
 :   manipulate archive files   \
@@ -371,9 +373,11 @@ RUN set -e; \
     --enable-small \
     --enable-version3 && \
     make; \
-    find /bin /etc /lib /run /sbin /usr /var ! -type d | sort > /tmp/before-1.log; \
+    find /* -maxdepth 0 -type d ! -regex '\/\(dev\|lost\+found\|mnt\|proc\|srv\|sys\|tmp\)' -exec find {} + | \
+        sort > /tmp/before-1.log; \
     make install; \
-    find /bin /etc /lib /run /sbin /usr /var ! -type d | sort > /tmp/after-1.log; \
+    find /* -maxdepth 0 -type d ! -regex '\/\(dev\|lost\+found\|mnt\|proc\|srv\|sys\|tmp\)' -exec find {} + | \
+        sort > /tmp/after-1.log; \
 :                              \
 :   manipulate archive files   \
 ;                              \
